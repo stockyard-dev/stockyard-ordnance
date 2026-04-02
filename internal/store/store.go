@@ -1,13 +1,24 @@
 package store
-import("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
-type DB struct{*sql.DB}
-type Scan struct{ID int64 `json:"id"`;Target string `json:"target"`;Status string `json:"status"`;VulnCount int `json:"vuln_count"`;CreatedAt time.Time `json:"created_at"`}
-type Vulnerability struct{ID int64 `json:"id"`;ScanID int64 `json:"scan_id"`;Package string `json:"package"`;Version string `json:"version"`;CVE string `json:"cve"`;Severity string `json:"severity"`;Description string `json:"description"`}
-func Open(d string)(*DB,error){os.MkdirAll(d,0755);dsn:=filepath.Join(d,"ordnance.db")+"?_journal_mode=WAL&_busy_timeout=5000";db,err:=sql.Open("sqlite",dsn);if err!=nil{return nil,fmt.Errorf("open: %w",err)};db.SetMaxOpenConns(1);migrate(db);return &DB{db},nil}
-func migrate(db *sql.DB){db.Exec(`CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY AUTOINCREMENT,target TEXT NOT NULL,status TEXT DEFAULT 'pending',vuln_count INTEGER DEFAULT 0,created_at DATETIME DEFAULT CURRENT_TIMESTAMP);CREATE TABLE IF NOT EXISTS vulnerabilities(id INTEGER PRIMARY KEY AUTOINCREMENT,scan_id INTEGER NOT NULL,package TEXT NOT NULL,version TEXT DEFAULT '',cve TEXT DEFAULT '',severity TEXT DEFAULT 'medium',description TEXT DEFAULT '')`)}
-func(db *DB)CreateScan(target string)(*Scan,error){res,err:=db.Exec(`INSERT INTO scans(target)VALUES(?)`,target);if err!=nil{return nil,err};id,_:=res.LastInsertId();return &Scan{ID:id,Target:target,Status:"pending"},nil}
-func(db *DB)List()([]Scan,error){rows,_:=db.Query(`SELECT id,target,status,vuln_count,created_at FROM scans ORDER BY created_at DESC`);defer rows.Close();var out[]Scan;for rows.Next(){var s Scan;rows.Scan(&s.ID,&s.Target,&s.Status,&s.VulnCount,&s.CreatedAt);out=append(out,s)};return out,nil}
-func(db *DB)AddVuln(v *Vulnerability){db.Exec(`INSERT INTO vulnerabilities(scan_id,package,version,cve,severity,description)VALUES(?,?,?,?,?,?)`,v.ScanID,v.Package,v.Version,v.CVE,v.Severity,v.Description);db.Exec(`UPDATE scans SET vuln_count=vuln_count+1,status='complete' WHERE id=?`,v.ScanID)}
-func(db *DB)GetVulns(scanID int64)([]Vulnerability,error){rows,_:=db.Query(`SELECT id,scan_id,package,version,cve,severity,description FROM vulnerabilities WHERE scan_id=? ORDER BY severity`,scanID);defer rows.Close();var out[]Vulnerability;for rows.Next(){var v Vulnerability;rows.Scan(&v.ID,&v.ScanID,&v.Package,&v.Version,&v.CVE,&v.Severity,&v.Description);out=append(out,v)};return out,nil}
-func(db *DB)Delete(id int64){db.Exec(`DELETE FROM vulnerabilities WHERE scan_id=?`,id);db.Exec(`DELETE FROM scans WHERE id=?`,id)}
-func(db *DB)Stats()(map[string]interface{},error){var s,v int;db.QueryRow(`SELECT COUNT(*) FROM scans`).Scan(&s);db.QueryRow(`SELECT COUNT(*) FROM vulnerabilities`).Scan(&v);return map[string]interface{}{"scans":s,"total_vulns":v},nil}
+import ("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
+type DB struct{db *sql.DB}
+type Release struct{
+	ID string `json:"id"`
+	Name string `json:"name"`
+	Version string `json:"version"`
+	Platform string `json:"platform"`
+	Artifact string `json:"artifact_url"`
+	Checksum string `json:"checksum"`
+	Downloads int `json:"downloads"`
+	CreatedAt string `json:"created_at"`
+}
+func Open(d string)(*DB,error){if err:=os.MkdirAll(d,0755);err!=nil{return nil,err};db,err:=sql.Open("sqlite",filepath.Join(d,"ordnance.db")+"?_journal_mode=WAL&_busy_timeout=5000");if err!=nil{return nil,err}
+db.Exec(`CREATE TABLE IF NOT EXISTS releases(id TEXT PRIMARY KEY,name TEXT NOT NULL,version TEXT DEFAULT '',platform TEXT DEFAULT '',artifact_url TEXT DEFAULT '',checksum TEXT DEFAULT '',downloads INTEGER DEFAULT 0,created_at TEXT DEFAULT(datetime('now')))`)
+return &DB{db:db},nil}
+func(d *DB)Close()error{return d.db.Close()}
+func genID()string{return fmt.Sprintf("%d",time.Now().UnixNano())}
+func now()string{return time.Now().UTC().Format(time.RFC3339)}
+func(d *DB)Create(e *Release)error{e.ID=genID();e.CreatedAt=now();_,err:=d.db.Exec(`INSERT INTO releases(id,name,version,platform,artifact_url,checksum,downloads,created_at)VALUES(?,?,?,?,?,?,?,?)`,e.ID,e.Name,e.Version,e.Platform,e.Artifact,e.Checksum,e.Downloads,e.CreatedAt);return err}
+func(d *DB)Get(id string)*Release{var e Release;if d.db.QueryRow(`SELECT id,name,version,platform,artifact_url,checksum,downloads,created_at FROM releases WHERE id=?`,id).Scan(&e.ID,&e.Name,&e.Version,&e.Platform,&e.Artifact,&e.Checksum,&e.Downloads,&e.CreatedAt)!=nil{return nil};return &e}
+func(d *DB)List()[]Release{rows,_:=d.db.Query(`SELECT id,name,version,platform,artifact_url,checksum,downloads,created_at FROM releases ORDER BY created_at DESC`);if rows==nil{return nil};defer rows.Close();var o []Release;for rows.Next(){var e Release;rows.Scan(&e.ID,&e.Name,&e.Version,&e.Platform,&e.Artifact,&e.Checksum,&e.Downloads,&e.CreatedAt);o=append(o,e)};return o}
+func(d *DB)Delete(id string)error{_,err:=d.db.Exec(`DELETE FROM releases WHERE id=?`,id);return err}
+func(d *DB)Count()int{var n int;d.db.QueryRow(`SELECT COUNT(*) FROM releases`).Scan(&n);return n}
